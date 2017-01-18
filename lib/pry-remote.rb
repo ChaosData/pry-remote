@@ -8,6 +8,15 @@ module PryRemote
   DefaultHost = "127.0.0.1"
   DefaultPort = 9876
 
+  def self.kwargs(args)
+    if args.last.is_a?(Hash)
+      args.pop
+    else
+      {}
+    end
+  end
+
+
   # A class to represent an input object created from DRb. This is used because
   # Pry checks for arity to know if a prompt should be passed to the object.
   #
@@ -140,19 +149,31 @@ module PryRemote
   end
 
   class Server
-    def self.run(object, host = DefaultHost, port = DefaultPort, options = {})
-      new(object, host, port, options).run
+    def self.run(object, *args)
+      options = PryRemote.kwargs(args)
+      new(object, options).run
     end
 
-    def initialize(object, host = DefaultHost, port = DefaultPort, options = {})
-      @host    = host
-      @port    = port
+    def initialize(object, *args)
+      options = PryRemote.kwargs(args)
+
+      @host    = options[:host] || DefaultHost
+      @port    = options[:port] || DefaultPort
+
+      @unix = options[:unix] || false
+
+      if @unix == false
+        @uri = "druby://#{@host}:#{@port}"
+        @unix = ""
+      else
+        @uri = "drbunix:#{@unix}"
+      end
 
       @object  = object
       @options = options
 
       @client = PryRemote::Client.new
-      DRb.start_service uri, @client
+      DRb.start_service @uri, @client
     end
 
     # Code that has to be called for Pry-remote to work properly
@@ -251,10 +272,12 @@ module PryRemote
     # @return [Integer] Port of the server
     attr_reader :port
 
+    # @return [String] Unix domain socket path of the server
+    attr_reader :unix
+
     # @return [String] URI for DRb
-    def uri
-      "druby://#{host}:#{port}"
-    end
+    attr_reader :uri
+
   end
 
   # Parses arguments and allows to start the client.
@@ -274,6 +297,9 @@ module PryRemote
         on :c, :capture, "Captures $stdout and $stderr from the server (true)",
            :default => true
         on :f, "Disables loading of .pryrc and its plugins, requires, and command history "
+        on :b, :bind=, "Local Drb bind (IP open to server and random port by default, or a Unix domain socket path)"
+        on :z, :bind_proto=, "Protocol for bind to override connection-based default (tcp or unix)"
+        on :u, :unix=, "Unix domain socket path of the server"
       end
 
       exit if params.help?
@@ -281,9 +307,42 @@ module PryRemote
       @host = params[:server]
       @port = params[:port]
 
+      @bind = params[:bind]
+      @bind_proto = params[:bind_proto]
+
+      @unix = params[:unix]
+
+      if @bind_proto == nil
+        if @unix == nil
+          @bind_proto = "druby://"
+        else
+          @bind_proto = "drbunix:"
+        end
+      else
+        if @bind_proto == "tcp"
+        elsif @bind_proto == "unix"
+        else
+          puts "[pry-remote] invalid bind protocol"
+          exit
+        end
+      end
+
+      if @unix == nil
+        @uri = "druby://#{@host}:#{@port}"
+        @unix = ""
+      else
+        if @bind == nil
+          puts "[pry-remote] bind not supplied for Unix domain socket connection"
+          exit
+        end
+        @uri = "drbunix:#{@unix}"
+      end
+
       @wait = params[:wait]
       @persist = params[:persist]
       @capture = params[:capture]
+
+      
 
       Pry.initial_session_setup unless params[:f]
     end
@@ -294,10 +353,14 @@ module PryRemote
     # @return [Integer] Port of the server
     attr_reader :port
 
+    # @return [String] Unix domain socket path of the server
+    attr_reader :unix
+
     # @return [String] URI for DRb
-    def uri
-      "druby://#{host}:#{port}"
-    end
+    attr_reader :uri
+
+    # @return [String] Bind for local DRb server
+    attr_reader :bind
 
     attr_reader :wait
     attr_reader :persist
@@ -318,8 +381,16 @@ module PryRemote
     # @param [IO] input  Object holding input for pry-remote
     # @param [IO] output Object pry-debug will send its output to
     def connect(input = Pry.config.input, output = Pry.config.output)
-      local_ip = UDPSocket.open {|s| s.connect(@host, 1); s.addr.last}
-      DRb.start_service "druby://#{local_ip}:0"
+      if bind == false
+        local_ip = UDPSocket.open {|s| s.connect(@host, 1); s.addr.last}
+        DRb.start_service "druby://#{local_ip}:0"
+      else
+        if @bind_proto == "tcp"
+          DRb.start_service "druby://#{bind}"
+        else
+          DRb.start_service "drbunix:#{bind}"
+        end
+      end
       client = DRbObject.new(nil, uri)
 
       cleanup(client)
@@ -359,6 +430,7 @@ module PryRemote
         # This is a hack to close the connection of DRb.
         client.cleanup
       rescue DRb::DRbConnError, NoMethodError
+      rescue DRb::DRbUnknownError # ? NameError::Message
       end
     end
   end
@@ -367,11 +439,18 @@ end
 class Object
   # Starts a remote Pry session
   #
-  # @param [String]  host Host of the server
-  # @param [Integer] port Port of the server
+  # @param [String] host Host of the server (legacy)
+  # @param [Integer] port Port of the server (legacy)
   # @param [Hash] options Options to be passed to Pry.start
-  def remote_pry(host = PryRemote::DefaultHost, port = PryRemote::DefaultPort, options = {})
-    PryRemote::Server.new(self, host, port, options).run
+  def remote_pry(*args)
+    options = PryRemote.kwargs(args)
+    if args.length == 2
+      options[:port] = args.pop
+    end
+    if args.length == 1
+      options[:host] = args.pop
+    end
+    PryRemote::Server.new(self, options).run
   end
 
   # a handy alias as many people may think the method is named after the gem
