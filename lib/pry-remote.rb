@@ -4,6 +4,7 @@ require 'drb'
 require 'readline'
 require 'open3'
 
+
 module PryRemote
   DefaultHost = "127.0.0.1"
   DefaultPort = 9876
@@ -15,7 +16,6 @@ module PryRemote
       {}
     end
   end
-
 
   # A class to represent an input object created from DRb. This is used because
   # Pry checks for arity to know if a prompt should be passed to the object.
@@ -161,9 +161,13 @@ module PryRemote
       @port    = options[:port] || DefaultPort
 
       @unix = options[:unix] || false
+      @secret = ""
+      if options[:secret] != nil
+        @secret = "?secret=" + options[:secret]
+      end
 
       if @unix == false
-        @uri = "druby://#{@host}:#{@port}"
+        @uri = "druby://#{@host}:#{@port}#{@secret}"
         @unix = ""
       else
         @uri = "drbunix:#{@unix}"
@@ -300,6 +304,8 @@ module PryRemote
         on :b, :bind=, "Local Drb bind (IP open to server and random port by default, or a Unix domain socket path)"
         on :z, :bind_proto=, "Protocol for bind to override connection-based default (tcp or unix)"
         on :u, :unix=, "Unix domain socket path of the server"
+        #on :k, :secret=, "Shared secret for authenticating to the server (TCP only)"
+        #note: secret handling is to be handled by a proxy, not the client
       end
 
       exit if params.help?
@@ -311,6 +317,10 @@ module PryRemote
       @bind_proto = params[:bind_proto]
 
       @unix = params[:unix]
+      #@secret = ""
+      #if options[:secret] != nil
+      #  @secret = "?secret=" + params[:secret]
+      #end
 
       if @bind_proto == nil
         if @unix == nil
@@ -329,6 +339,7 @@ module PryRemote
 
       if @unix == nil
         @uri = "druby://#{@host}:#{@port}"
+        #@uri = "druby://#{@host}:#{@port}#{@secret}"
         @unix = ""
       else
         if @bind == nil
@@ -444,6 +455,9 @@ class Object
   # @param [Hash] options Options to be passed to Pry.start
   def remote_pry(*args)
     options = PryRemote.kwargs(args)
+    if args.length == 3
+      options[:secret] = args.pop
+    end
     if args.length == 2
       options[:port] = args.pop
     end
